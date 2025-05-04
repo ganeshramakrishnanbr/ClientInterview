@@ -1,4 +1,4 @@
-# Life Insurance Medical Interview - Navigation Guide
+# Life Insurance Medical Interview - Navigation Guide (High Level Overview)
 
 ## Overview
 
