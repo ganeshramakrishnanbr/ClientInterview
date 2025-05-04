@@ -1,0 +1,263 @@
+# Technical Details - Life Insurance Medical Interview
+
+This document provides in-depth technical information about the implementation of the Life Insurance Medical Interview application.
+
+## Technology Stack
+
+- **Frontend Framework**: React with TypeScript
+- **State Management**: Zustand with immer middleware
+- **Routing**: React Router v6
+- **Local Storage**: Dexie.js (IndexedDB wrapper)
+- **UI Components**: Tailwind CSS with Headless UI
+- **Icons**: Heroicons
+- **Build Tool**: Vite
+
+## Core Technical Components
+
+### 1. Form Definition System
+
+The form is defined in `formService.ts` using a structured schema:
+
+```typescript
+export interface MedicalForm {
+  id: string;
+  title: string;
+  sections: FormSection[];
+}
+
+export interface FormSection {
+  id: string;
+  title: string;
+  questions: Question[];
+}
+
+export interface Question {
+  id: string;
+  type: QuestionType;
+  text: string;
+  required: boolean;
+  options?: Option[];
+  conditionalId?: string;
+  conditionalValue?: string | string[];
+  validation?: ValidationRule[];
+  gridItems?: string[];
+  gridHeaders?: string[];
+}
+```
+
+This schema allows for:
+- Hierarchical organization (form > sections > questions)
+- Different question types (text, radio, checkbox, etc.)
+- Conditional logic based on previous answers
+- Custom validation rules
+
+### 2. Conditional Logic Engine
+
+The conditional logic is implemented in `formStore.ts` through the `shouldShowQuestion` function:
+
+```typescript
+export const shouldShowQuestion = (question: Question, responses: Record<string, FormResponse>): boolean => {
+  if (!question.conditionalId) return true;
+  
+  const conditionResponse = responses[question.conditionalId];
+  if (!conditionResponse) return false;
+  
+  if (Array.isArray(question.conditionalValue)) {
+    return Array.isArray(conditionResponse.answer) 
+      ? question.conditionalValue.some(val => conditionResponse.answer.includes(val))
+      : question.conditionalValue.includes(conditionResponse.answer as string);
+  }
+  
+  if (typeof conditionResponse.answer === 'object' && !Array.isArray(conditionResponse.answer)) {
+    // For complex grid responses
+    return Object.values(conditionResponse.answer).some(
+      val => val === question.conditionalValue
+    );
+  }
+  
+  return conditionResponse.answer === question.conditionalValue;
+};
+```
+
+This function evaluates whether a question should be displayed based on:
+- The existence of a conditional rule
+- The value of the referenced question's answer
+- Support for different answer types (string, array, object)
+
+### 3. Data Persistence Layer
+
+The application uses IndexedDB through Dexie.js for client-side storage:
+
+```typescript
+class MedicalInterviewDB extends Dexie {
+  applications!: Table<ApplicationData>;
+
+  constructor() {
+    super('MedicalInterviewDB');
+    this.version(1).stores({
+      applications: '++id, userId, formId, status'
+    });
+  }
+
+  async saveFormProgress(applicationData: Partial<ApplicationData>): Promise<string> {
+    if (applicationData.id) {
+      await this.applications.update(applicationData.id, {
+        ...applicationData,
+        updatedAt: new Date()
+      });
+      return applicationData.id;
+    } else {
+      const id = await this.applications.add({
+        ...applicationData as ApplicationData,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        status: 'draft'
+      });
+      return id.toString();
+    }
+  }
+
+  // Additional methods for retrieving and updating applications
+}
+```
+
+This implementation provides:
+- Automatic versioning and schema migration
+- CRUD operations for application data
+- Timestamps for tracking creation and updates
+- Status tracking (draft, submitted, etc.)
+
+### 4. Dynamic Question Rendering
+
+The application uses a component factory pattern to render different question types:
+
+```typescript
+export const QuestionRenderer: React.FC<QuestionRendererProps> = ({
+  question,
+  response,
+  onChange,
+  className
+}) => {
+  const handleChange = (answer: string | string[] | Record<string, string>) => {
+    onChange(question.id, answer);
+  };
+
+  switch (question.type) {
+    case 'text':
+      return (
+        <TextQuestion 
+          question={question} 
+          response={response} 
+          onChange={handleChange} 
+          className={className}
+        />
+      );
+    
+    case 'textarea':
+      return (
+        <TextAreaQuestion 
+          question={question} 
+          response={response} 
+          onChange={handleChange} 
+          className={className}
+        />
+      );
+    
+    // Additional cases for other question types
+    
+    default:
+      return <div>Unsupported question type: {question.type}</div>;
+  }
+};
+```
+
+This approach:
+- Decouples question rendering from question data
+- Allows easy addition of new question types
+- Maintains consistent handling of responses
+
+### 5. JSON Output Generation
+
+The JSON output is generated by formatting the responses object:
+
+```typescript
+// In formStore.ts
+const responses = {
+  "name": {
+    "questionId": "name",
+    "answer": "John Doe"
+  },
+  "age": {
+    "questionId": "age",
+    "answer": "35"
+  },
+  "medicalConditions": {
+    "questionId": "medicalConditions",
+    "answer": ["diabetes", "hypertension"]
+  },
+  "familyHistory": {
+    "questionId": "familyHistory",
+    "answer": {
+      "father": "heart disease",
+      "mother": "none"
+    }
+  }
+}
+```
+
+This structure preserves:
+- The original question ID (for mapping)
+- The user's response in its appropriate type
+- Complex data structures for multi-part questions
+
+The JSON is displayed in the SubmissionSuccessPage component:
+
+```typescript
+const SubmissionSuccessPage: React.FC = () => {
+  const { responses } = useFormStore();
+  const [showJson, setShowJson] = useState(false);
+  
+  // Format the JSON for display
+  const formattedJson = JSON.stringify(responses, null, 2);
+  
+  return (
+    // Component JSX including:
+    {showJson && (
+      <div className="mt-4 p-4 bg-gray-50 rounded-md overflow-auto max-h-96">
+        <h4 className="text-sm font-medium text-gray-900 mb-2">
+          Form Response JSON (with Source Mapping IDs)
+        </h4>
+        <pre className="text-xs text-gray-700 whitespace-pre-wrap">
+          {formattedJson}
+        </pre>
+      </div>
+    )}
+  );
+};
+```
+
+## Performance Considerations
+
+1. **Memoization**: Components use React.memo and useMemo to prevent unnecessary re-renders
+2. **Lazy Loading**: Form sections are loaded only when needed
+3. **Batch Updates**: State updates are batched using immer middleware
+4. **IndexedDB**: Used for efficient client-side storage instead of localStorage
+5. **Conditional Rendering**: Questions are only rendered when needed based on conditional logic
+
+## Security Considerations
+
+1. **Data Storage**: Sensitive data is only stored locally until submission
+2. **Input Validation**: All user inputs are validated before processing
+3. **Type Safety**: TypeScript is used throughout to ensure type safety
+4. **XSS Prevention**: React's built-in XSS protection is leveraged
+5. **No Sensitive Data in URLs**: Application state is managed without exposing sensitive data in URLs
+
+## Extensibility
+
+The application is designed for easy extension:
+
+1. **New Question Types**: Add a new component and update the QuestionRenderer
+2. **Additional Sections**: Simply add to the form definition in formService
+3. **Custom Validation**: Extend the validation rules in the Question interface
+4. **Theming**: Tailwind CSS makes styling customization straightforward
+5. **API Integration**: The form submission can be easily modified to send data to an API
